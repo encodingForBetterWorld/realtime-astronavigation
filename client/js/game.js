@@ -170,7 +170,7 @@
                 ctx.translate(bla.dx, bla.dy);
                 ctx.rotate(bla.outRotation);
                 blackOutImg.src=img_path+"black_hole_out.png"
-                ctx.drawImage(blackOutImg, -bla.outRadius, -bla.outRadius);
+                ctx.drawImage(blackOutImg, -bla.radius, -bla.radius);
                 ctx.restore();
                 ctx.save();
                 ctx.translate(bla.dx, bla.dy);
@@ -269,7 +269,7 @@
             if(!$.isEmptyObject(ctx.hit)){
                 //画冲击波
                 ctx.save();
-                ctx.lineWidth = 8;
+                ctx.lineWidth = 6;
                 ctx.strokeStyle = '#ffffff';
                 ctx.hit.explodes.forEach(function (explode) {
                     if(explode.isShow){
@@ -287,11 +287,22 @@
                         ctx.translate(spark.dx,spark.dy);
                         var star=new Image();
                         star.src="./assets/spark.png"
-                        ctx.drawImage(star,0,0,30,30);
+                        ctx.drawImage(star,0,0,spark.radius,spark.radius);
                         ctx.restore();
                     }
                 })
             }
+        },
+        drawInfoPoint:function (ctx) {
+            ctx.save();
+            ctx.info_points.forEach(function (info_point) {
+                ctx.fillStyle = 'hsla('+ info_point.hue +', 0%, 0%, ' + (info_point.alpha < 0 ? 0 : info_point.alpha) + ')';
+                ctx.fillText(info_point.info, info_point.dx, info_point.dy + 1);
+                ctx.fillStyle = 'hsla(' + info_point.hue + ', 100%, 60%, ' + (info_point.alpha < 0 ? 0 : info_point.alpha) + ')';
+                ctx.font=info_point.font_size+"px YouYuan";
+                ctx.fillText(info_point.info, info_point.dx, info_point.dy);
+            });
+            ctx.restore();
         }
     }
     /*登录成功后加载动画*/
@@ -367,6 +378,7 @@
                 ShipUtil.draw(this);
                 CoinUtil.draw(this);
                 EffectUtil.drawHit(this);
+                EffectUtil.drawInfoPoint(this);
                 this.profitDisplay.text(this.numberWithCommas(this.profitDisplayVal));
                 this.cleared = false;
             }

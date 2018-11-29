@@ -1,12 +1,13 @@
 "use strict"
-var utils=require('./utils.js')
-var ship_imgs = new Map()
-    .set(1,{width:117,height:58})
-    .set(2,{width:109,height:61})
-    .set(3,{width:119,height:70})
-    .set(4,{width:132,height:64});
-var rock_imgs = new Map()
-    .set(1,{width:156,height:156})
+const utils=require('./utils.js')
+const UUID = require('uuid');
+const ship_templates = new Map()
+    .set(1,{width:117,height:58,mass:50})
+    .set(2,{width:109,height:61,mass:80})
+    .set(3,{width:119,height:70,mass:120})
+    .set(4,{width:132,height:64,mass:200});
+const rock_templates = new Map()
+    .set(1,{width:156,height:156,mass:1500})
 const global_with = 5000, global_height = 5000;
 //全局画布
 class Context{
@@ -17,46 +18,46 @@ class Context{
         this.magnetRange = 250;
         this.hue = 60;
         this.ndt = 1;
-        //金币
-        this.coins = [];
+        this.coin_count = 0;
         //飞船
         this.ships = {};
         //陨石
         this.rocks = [];
-        //撞击点
-        this.hits = [];
-        //
+        //特效
+        this.efforts = {}
         //黑洞
         this.black_holes = [new BlackHole(2000,2000,true),new BlackHole(4000,4000,false)];
         this.socks = {};
-        var self = this;
+        let self = this;
         setInterval(function() {
-            if(self.coins.length<20)self.coins.push(new Coin(utils.random(0,self.width), utils.random(0,self.height),Math.floor(utils.random(1, 100))));
+            if(self.coin_count<20){
+                let coin = new Coin(utils.random(0,self.width), utils.random(0,self.height),Math.floor(utils.random(1, 100)));
+                self.efforts[coin.oid]=coin;
+                self.coin_count += 1;
+            }
         }, 200);
         setInterval(function() {
             if(self.rocks.length<8)self.rocks.push(new Rock(utils.random(0,self.width), utils.random(0,self.height),1));
         }, 500);
         setInterval(function () {
             self.hue += 0.75;
-            //金币动画
-            let i=self.coins.length;
-            while (i--){
-                self.coins[i].update(self,i)
-            }
-            i=self.rocks.length;
+            //陨石动画
+            let i=self.rocks.length;
             while (i--){
                 self.rocks[i].update(self);
             }
+            //黑洞动画
             i=self.black_holes.length;
             while (i--){
                 self.black_holes[i].update(self);
             }
-            i=self.hits.length;
-            while(i--){
-                let hit=self.hits[i];
-                if(hit.isShow)hit.update()
-                else self.hits.splice(i,1)
+            //特效动画
+            for(let i in self.efforts){
+                let effort = self.efforts[i];
+                effort.update(self);
+                self.clear(effort);
             }
+            //飞船动画
             let ship_ids = Object.keys(self.ships);
             for(let i=0; i < ship_ids.length; i++){
                 let sid = ship_ids[i];
@@ -68,28 +69,36 @@ class Context{
                         let rock = self.rocks[k];
                         let c = ship.collide(rock);
                         if(c instanceof Array){
-                            ship.hit=true;
-                            ship.hit_begin_time =+ new Date;
-                            ship.health -= ship.v;
-                            ship.hit_eff_time = 100*ship.v
+                            let force = utils.update_entity_speed_after_collided(ship, rock, true);
+                            ship.after_collided(self, force);
                             //产生撞击点
-                            self.hits.push(new Collision(c[0],c[1],20*ship.v));
-                            //陨石运动
-                            rock.vx=ship.vx;
-                            rock.vy=ship.vy;
+                            let collision = new Collision(c[0],c[1],force);
+                            self.efforts[collision.oid] = collision;
                             if(ship.health <= 0){
                                 ship.destory(self);
                                 break
                             }
                         }
                     }
-                    for(let j=i+1; j < ship_ids.length; j++){
-                        let other_ship = self.ships[ship_ids[j]];
-                        if(ship.collide(other_ship)){
-                            other_ship.hit=ship.hit=true;
-                            other_ship.hit_begin_time =+ new Date;
-                            ship.hit_begin_time =+ new Date;
-                            other_ship.hit_eff_time=ship.hit_eff_time = 300;
+                    if(!ship.is_destory){
+                        for(let j=i+1; j < ship_ids.length; j++){
+                            let other_ship = self.ships[ship_ids[j]];
+                            if(!other_ship.is_destory){
+                                let c=ship.collide(other_ship);
+                                if(c instanceof Array){
+                                    let force = utils.update_entity_speed_after_collided(ship, other_ship, true);
+                                    ship.after_collided(self, force);
+                                    other_ship.after_collided(self, force);
+                                    //产生撞击点
+                                    let collision = new Collision(c[0],c[1],force);
+                                    self.efforts[collision.oid] = collision;
+                                    if(other_ship.health <= 0)other_ship.destory(self);
+                                    if(ship.health <= 0){
+                                        ship.destory(self);
+                                        break
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -145,6 +154,12 @@ class Context{
              }
          })
     }
+    clear(entity) {
+        if(entity.should_remove(this)){
+            delete this.efforts[entity.oid];
+            entity.after_remove(this);
+        };
+    }
     * ship_values(){
         for(let sid in this.ships){
             let ship = this.ships[sid]
@@ -158,7 +173,7 @@ class Entity{
     constructor(x, y, oid){
         this.x = x;
         this.y = y;
-        this.oid = oid;
+        this.oid = oid ? oid:UUID.v1();
     }
     update(){}
     collide(entity){
@@ -179,11 +194,26 @@ class Entity{
         }
         return ret
     }
+    outOfBounds(ctx) {
+        return (this.x > ctx.width || this.x < 0 || this.y > ctx.height || this.y < 0);
+    }
+    outOfCamera(cam){
+        return (this.x < cam.x || this.x > cam.x+cam.width || this.y < cam.y || this.y > cam.y+cam.height)
+    }
+    should_remove(){return false}
+    after_remove(){}
 }
+
 class Circle extends Entity{
     constructor(x, y, radius, oid){
         super(x, y, oid);
         this.radius = radius;
+    }
+    outOfBounds(ctx) {
+        return (this.x > ctx.width + this.radius || this.x < -this.radius || this.y > ctx.height + this.radius || this.y < -this.radius);
+    }
+    outOfCamera(cam){
+        return (this.x > cam.x + cam.width + this.radius || this.x < cam.x - this.radius || this.y > cam.y + cam.height + this.radius || this.y < cam.y - this.radius);
     }
 }
 class Rect extends Entity{
@@ -192,13 +222,37 @@ class Rect extends Entity{
         this.width = width;
         this.height = height;
     }
+    outOfBounds(ctx) {
+        return this.x > ctx.width + this.width || this.x < -this.width || this.y > ctx.height + this.height || this.y < -this.height;
+    }
+    outOfCamera(cam){
+        return (this.x > cam.x + cam.width + this.width || this.x < cam.x - this.width || this.y > cam.y + cam.height + this.height || this.y < cam.y - this.height);
+    }
+}
+class InfoPoint extends Entity{
+    constructor(x, y, info, hue, font_size){
+        super(x, y);
+        this.info = info;
+        this.alpha = 1;
+        this.hue = hue;
+        this.font_size=font_size;
+        this.cv = 0;
+    }
+    update(ctx){
+        this.alpha -= 0.03 * ctx.ndt;
+        this.cv += 0.15 * ctx.ndt;
+        this.y -= this.cv * ctx.ndt;
+    }
+    should_remove(ctx){
+        return (this.outOfBounds(ctx) || this.alpha <= 0)
+    }
 }
 
 class Spark extends Circle{
-    constructor(x, y, radius){
-        super(x, y, radius);
+    constructor(x, y, range){
+        super(x, y, range/2);
         this.move_angle=utils.random(0,Math.PI*2)
-        this.move_range=utils.random(20,radius)
+        this.move_range=utils.random(20,range)
         this.move_dist=0
         this.v=6;
         this.isShow=!0;
@@ -233,25 +287,34 @@ class Explode extends Circle{
 
 class Collision extends Circle{
     constructor(x, y, force){
-        super(x, y, force);
+        super(x, y, force*12.5);
         this.force = force;
         this.isShow=!0;
         this.sparks=[];
-        var count=10
+        let count=force;
         while (count--){
-            this.sparks.push(new Spark(x,y,this.force))
+            this.sparks.push(new Spark(x,y,this.radius))
         }
-        this.explode=new Explode(x,y,this.force)
+        if(force > 2){
+            this.explode=new Explode(x,y,this.radius);
+        }
     }
     update() {
-        this.explode.update();
-        this.isShow=this.explode.isShow;
-        var i = this.sparks.length;
+        let i = this.sparks.length;
+        let spark_isShow = false;
         while (i--) {
             let spark=this.sparks[i]
             spark.update()
-            this.isShow=this.isShow||spark.isShow
+            spark_isShow=spark_isShow||spark.isShow;
         }
+        this.isShow = spark_isShow
+        if(this.explode){
+            this.explode.update();
+            this.isShow=this.explode.isShow;
+        }
+    }
+    should_remove(ctx){
+        return (this.outOfBounds(ctx) || (!this.isShow))
     }
 }
 //镜头
@@ -271,67 +334,61 @@ class Camera {
         //镜头中的黑洞
         this.black_hole = {}
         //撞击点
-        // this.hits=[]
         this.explodes=[]
         this.sparks=[]
+        this.info_points=[]
         this.profit=profit
     }
+    locateInCamera(entity){
+        let clone = Object.assign({}, entity);
+        clone["dx"] = entity.x - this.x;
+        clone["dy"] = entity.y - this.y;
+        delete clone["oid"];
+        return clone;
+    }
     lookAt(ctx){
-        var coins,rocks,hits,self=this;
-        var top=this.y,bottom=this.y+this.height;
-        var left=this.x,right=this.x+this.width;
-        coins=ctx.coins;
         this.hue = ctx.hue;
-        coins.forEach(function (coin) {
-            if(coin.x>left && coin.x<right
-                && coin.y>top && coin.y<bottom){
-                self.coins.push(utils.locateInCamera(self,coin))
-            }
-        })
-        rocks=ctx.rocks;
-        rocks.forEach(function (rock) {
-            if(rock.x+rock.halfWidth>left && rock.x-rock.halfWidth<right
-                && rock.y+rock.halfHeight>top && rock.y-rock.halfHeight<bottom){
-                self.rocks.push(utils.locateInCamera(self,rock))
-            }
-        })
-        for(let ship of ctx.ship_values()){
-            if(ship.xMin && ship.xMin+ship.bWidth/2>left && ship.xMin-ship.bWidth/2<right
-                && ship.yMin &&ship.yMin+ship.bHeight/2>top && ship.yMin-ship.bHeight/2<bottom){
-                self.ships.push(utils.locateInCamera(self,ship))
+        for(let i in ctx.efforts){
+            let effort = ctx.efforts[i];
+            if(!effort.outOfCamera(this)){
+                if(effort instanceof Coin)this.coins.push(this.locateInCamera(effort));
+                else if(effort instanceof Collision){
+                    //定位火花
+                    let j=effort.sparks.length;
+                    while(j--){
+                        this.sparks.push(this.locateInCamera(effort.sparks[j]));
+                    }
+                    //定位爆炸
+                    if(effort.explode) this.explodes.push(this.locateInCamera(effort.explode));
+                }
+                else if(effort instanceof InfoPoint)this.info_points.push(this.locateInCamera(effort))
             }
         }
-        ctx.black_holes.forEach(function (bla) {
-            if(bla.x+bla.outRadius >left && bla.x-bla.outRadius<right && bla.y+bla.outRadius>top && bla.y-bla.outRadius<bottom){
-                self.black_hole=utils.locateInCamera(self,bla)
-            }
+        for(let ship of ctx.ship_values()){
+            if(!ship.outOfCamera(this))this.ships.push(this.locateInCamera(ship));
+        }
+        let self=this;
+        ctx.rocks.forEach(function (rock) {
+            if(!rock.outOfCamera(self))self.rocks.push(self.locateInCamera(rock));
         })
-        hits=ctx.hits;
-        hits.forEach(function (hit) {
-            if(hit.x+hit.radius >left && hit.x-hit.radius<right && hit.y+hit.radius>top && hit.y-hit.radius<bottom){
-                //定位爆炸
-                self.explodes.push(utils.locateInCamera(self,hit.explode))
-                //定位火花
-                var i=hit.sparks.length
-                while(i--){
-                    self.sparks.push(utils.locateInCamera(self,hit.sparks[i]))
-                }
-            }
+        ctx.black_holes.forEach(function (bla) {
+            if(!bla.outOfCamera(self))self.black_hole=self.locateInCamera(bla);
         })
     }
 }
 class Rock extends Circle{
     constructor(x, y, level){
-        var width = rock_imgs.get(level).width;
+        let template =  rock_templates.get(level);
+        let width = template.width;
         super(x, y, width/2);
+        this.mass=template.mass;
         this.vx=0;
         this.vy=0;
         this.level=level;
         this.width = width;
-        this.height=rock_imgs.get(level).height;
+        this.height=rock_templates.get(level).height;
         this.halfWidth=this.width/2;
         this.halfHeight=this.height/2;
-        this.hit=false;
         this.catch=false;
     }
     update(){
@@ -342,10 +399,9 @@ class Rock extends Circle{
     }
 }
 
-class BlackHole extends Entity{
+class BlackHole extends Circle{
     constructor(x, y, isBlack){
-        super(x, y);
-        this.outRadius=559/2;
+        super(x, y, 559/2);
         this.inRadius=204/2;
         this.isBlack=isBlack;
         //引力场范围
@@ -354,6 +410,7 @@ class BlackHole extends Entity{
         this.outRotationSpeed = 0.002;
         this.inRotation = 0;
         this.outRotation = 0;
+        this.damage = 10;
     }
     update(ctx){
         if(this.isBlack){
@@ -365,12 +422,12 @@ class BlackHole extends Entity{
             this.outRotation-=this.outRotationSpeed;
         }
         //黑洞吸引&白洞排斥的物理效果
-        var rocks,ships,anotherHole;
+        let rocks,anotherHole;
         rocks=ctx.rocks;
         anotherHole=(ctx.black_holes[0].isBlack!=this.isBlack)?ctx.black_holes[0]:ctx.black_holes[1];
-        var self=this;
+        let self=this;
         rocks.forEach(function (rock) {
-            var dx,dy,dist,angle,mvx,mvy,power
+            let dx,dy,dist,angle,mvx,mvy,power
             dx = rock.x + rock.width / 2 - self.x;
             dy = rock.y + rock.height / 2 - self.y;
             //环绕半径
@@ -401,8 +458,8 @@ class BlackHole extends Entity{
                 //白洞排斥
                 else{
                     //陨石做离心圆周运动
-                    if (rock.width <= rock_imgs.get(rock.level).width)rock.width += 0.05 * power;
-                    if (rock.height <= rock_imgs.get(rock.level).height)rock.height += 0.05 * power;
+                    if (rock.width <= rock_templates.get(rock.level).width)rock.width += 0.05 * power;
+                    if (rock.height <= rock_templates.get(rock.level).height)rock.height += 0.05 * power;
                     rock.x += (mvx * power);
                     rock.y += (mvy * power);
                 }
@@ -432,8 +489,7 @@ class BlackHole extends Entity{
                     if (dist <= 15){
                         ship.x=anotherHole.x;
                         ship.y=anotherHole.y;
-                        ship.health-=10;
-                        ship.inhole=false;
+                        ship.in_hole(ctx, this)
                         if(ship.health <= 0){
                             ship.destory(ctx);
                             continue;
@@ -453,8 +509,8 @@ class BlackHole extends Entity{
                     ship.outhole=true;
                     ship.x += (mvx * power);
                     ship.y += (mvy * power);
-                    if (ship.width <= ship_imgs.get(ship.level).width)ship.width += ship.width * 0.01 * power;
-                    if (ship.height <= ship_imgs.get(ship.level).height)ship.height += ship.height * 0.01 * power;
+                    if (ship.width <= ship_templates.get(ship.level).width)ship.width += ship.width * 0.01 * power;
+                    if (ship.height <= ship_templates.get(ship.level).height)ship.height += ship.height * 0.01 * power;
                 }
             }
             else {
@@ -479,7 +535,7 @@ class Coin extends Circle{
         this.cv = 0;
     }
     update(ctx, i){
-        var scaleChange;
+       let scaleChange;
         if (this.alpha < 1 && !this.collected) {
             this.alpha += 0.05 * ctx.ndt;
         }
@@ -495,67 +551,69 @@ class Coin extends Circle{
             this.xScale -= scaleChange;
         }
         if (!this.collected) {
-            var self=this;
-            (function () {
-                var angle, dist, dx, dy, mvx, mvy, power;
-                for(let ship of ctx.ship_values()){
-                    dx = ship.x + ship.width / 2 - self.x;
-                    dy = ship.y + ship.height / 2 - self.y;
-                    dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist <= ctx.magnetRange) {
-                        self.magnetized = true;
-                        angle = Math.atan2(dy, dx);
-                        mvx = Math.cos(angle);
-                        mvy = Math.sin(angle);
-                        power = 3 + (100 / dist);
-                        self.x += (mvx * power) * ctx.ndt;
-                        self.y += (mvy * power) * ctx.ndt;
-                    } else {
-                        self.magnetized = false;
-                        self.x += self.vx * ctx.ndt;
-                        self.y += self.vy * ctx.ndt;
-                    }
-                    if (dist <= Math.sqrt((ship.width * ship.width) + (ship.height * ship.height))/2) {
-                        // ship.flashFlag = true;
-                        ship.profit += self.value;
-                        self.collected = true;
-                        self.magnetized = false;
-                    }
+            let angle, dist, dx, dy, mvx, mvy, power;
+            for(let ship of ctx.ship_values()){
+                dx = ship.x + ship.width / 2 - this.x;
+                dy = ship.y + ship.height / 2 - this.y;
+                dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist <= ctx.magnetRange) {
+                    this.magnetized = true;
+                    angle = Math.atan2(dy, dx);
+                    mvx = Math.cos(angle);
+                    mvy = Math.sin(angle);
+                    power = 3 + (100 / dist);
+                    this.x += (mvx * power) * ctx.ndt;
+                    this.y += (mvy * power) * ctx.ndt;
+                } else {
+                    this.magnetized = false;
+                    this.x += this.vx * ctx.ndt;
+                    this.y += this.vy * ctx.ndt;
                 }
-            })()
+                if (dist <= Math.sqrt((ship.width * ship.width) + (ship.height * ship.height))/2) {
+                    // ship.flashFlag = true;
+                    ship.profit += this.value;
+                    this.collected = true;
+                    this.magnetized = false;
+                }
+            }
         } else {
             this.alpha -= 0.03 * ctx.ndt;
             this.cv += 0.15 * ctx.ndt;
             this.y -= this.cv * ctx.ndt;
         }
-        if (this.outOfBounds(ctx)) {
-            return ctx.coins.splice(i, 1);
-        }
     }
-    outOfBounds(ctx) {
-        return this.x > ctx.width + this.radius || this.x < -this.radius || this.y > ctx.height + this.radius || this.y < -this.radius;
+    should_remove(ctx){
+        return (this.outOfBounds(ctx) || this.alpha <= 0)
+    }
+    after_remove(ctx){
+        ctx.coin_count -= 1;
     }
 }
 class Ship extends Rect{
     constructor(screenX, screenY, screenWidth, screenHeight, username, oid){
         let level = 1;
-        let ship_img = ship_imgs.get(level);
-        let width = ship_img.width;
-        let height = ship_img.height;
+        let template = ship_templates.get(level);
+        let width = template.width;
+        let height = template.height;
         let x = screenX+(screenWidth-width)/2;
         let y = screenY+(screenHeight-height)/2;
         super(x, y, width, height, oid);
-        this.bWidth = width;
-        this.bHeight = height;
-        this.xMin = x;
-        this.yMin = y;
-        this.xMax = x + width;
-        this.yMax = y + height;
+        this.screenWidth = screenWidth;
+        this.screenHeight = screenHeight;
+        this.username=username;
+        this.mass=template.mass;
+        this.init_properties();
+    }
+    init_properties(){
+        this.bWidth = this.width;
+        this.bHeight = this.height;
+        this.tlx = this.blx = this.xMin = this.x;
+        this.tly = this['try'] = this.yMin = this.y;
+        this.trx = this.brx = this.xMax = this.x + this.width;
+        this.bly = this.bry = this.yMax = this.y + this.height;
         this.halfWidth = this.width / 2;
         this.halfHeight = this.height / 2;
         //在后台的坐标
-        this.screenWidth = screenWidth;
-        this.screenHeight = screenHeight;
         this.maxLength = Math.max(this.width, this.height);
         this.diagLength = Math.sqrt(this.halfWidth * this.halfWidth + this.halfHeight * this.halfHeight);
         this.rotationSpeed = 0.05;
@@ -567,19 +625,17 @@ class Ship extends Rect{
         this.thrust = 0;
         this.centerX = this.xMin + this.bWidth/2;
         this.centerY = this.yMin + this.bHeight/2;
+        this.pre_x = this.x;
+        this.pre_y = this.y;
         //分数
         this.profit=0;
-        //昵称
-        this.username=username;
         //血量
         this.health=100;
-        //碰撞
-        this.hit=false;
+        //击晕
+        this.is_stunned=false;
         //碰撞效果持续时间
-        this.hit_eff_time=0;
-        this.hit_begin_time=0;
-        //碰撞倒退
-        this.forward=1;
+        this.stunned_eff_time=0;
+        this.stunned_begin_time=0;
         //被黑洞吸引
         this.inhole=false;
         //被白洞排斥
@@ -605,7 +661,10 @@ class Ship extends Rect{
     update(ctx){
         let ax, ay;
         let p=this.profit;
-        this.canmove=(!this.inhole) && (!this.outhole);
+        this.canmove=(!this.inhole) && (!this.outhole) && (!this.is_stunned);
+        this.pre_x = this.x;
+        this.pre_y = this.y;
+        this.pre_rotation = this.rotation;
         if(this.canmove) {
             if (this.w) {
                 this.thrust = 0.15;
@@ -626,17 +685,6 @@ class Ship extends Rect{
         else {
             this.thrust = 0;
         }
-
-        if(this.hit){
-            this.forward=-0.35
-        }
-        else {
-            if(this.forward<0){
-                this.vx=0;
-                this.vy=0;
-            }
-            this.forward=1
-        }
         this.level=(p<2000)&&1||(p>=2000&&p<5000)&&2||(p>=5000&&p<10000)&&3||(p>=10000)&&4;
         this.cosRotation = Math.cos(this.rotation);
         this.sinRotation = Math.sin(this.rotation);
@@ -647,8 +695,8 @@ class Ship extends Rect{
         this.vx *= 0.99 ;
         this.vy *= 0.99 ;
         this.v = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
-        this.x += this.vx * ctx.ndt * this.forward;
-        this.y += this.vy * ctx.ndt * this.forward;
+        this.x += this.vx * ctx.ndt;
+        this.y += this.vy * ctx.ndt;
         //如果到达边界
         this.x=utils.between(this.x,10,ctx.width - this.bWidth);
         this.y=utils.between(this.y,28,ctx.height - this.bHeight);
@@ -673,17 +721,17 @@ class Ship extends Rect{
             this.msg=null;
             this.msgTime=0;
         }
-        if(this.hit_begin_time!=0&&(new Date-this.hit_begin_time)>=this.hit_eff_time){
-            this.hit=false;
-            this.hit_begin_time=0;
+        if(this.stunned_begin_time!=0&&(new Date-this.stunned_begin_time)>=this.stunned_eff_time){
+            this.is_stunned=false;
+            this.stunned_begin_time=0;
         }
     }
     destory(ctx){
         this.is_destory=true;
         this.msg=null;
         this.msgTime=0;
-        this.hit=false;
-        this.hit_begin_time = this.hit_eff_time = 0;
+        this.is_stunned=false;
+        this.stunned_begin_time = this.stunned_eff_time = 0;
         for(let sid in ctx.socks){
             let sock = ctx.socks[sid];
             if(sid == this.oid){
@@ -700,58 +748,38 @@ class Ship extends Rect{
             })
         }
     }
+    after_collided(ctx, force){
+        //对于主动碰撞者，第一次检测到碰撞后，可能已经发生重叠，矫正重叠
+        //返回上一帧没有碰撞检测的位置
+        this.x = this.pre_x;
+        this.y = this.pre_y;
+        this.rotation = this.pre_rotation;
+        if(force<4)return;
+        this.is_stunned=true;
+        this.stunned_begin_time =+ new Date;
+        this.health -= force;
+        let info_point = new InfoPoint(this.x, this.y, "-HP " + force, 0, 26);
+        ctx.efforts[info_point.oid] = info_point;
+        this.stunned_eff_time = force * 100;
+    }
+    in_hole(ctx, hole){
+        this.health-=hole.damage;
+        this.inhole=false;
+        let info_point = new InfoPoint(this.x, this.y, "-HP " + hole.damage, 0, 26);
+        ctx.efforts[info_point.oid] = info_point;
+    }
     resume(screenX, screenY, screenWidth, screenHeight){
-        let ship_img = ship_imgs.get(1);
-        let width = ship_img.width, height = ship_img.height;
+        let template = ship_templates.get(1);
+        let width = template.width, height = template.height;
         let x = screenX+(screenWidth-width)/2, y = screenY+(screenHeight-height)/2;
-        this.bWidth = width;
-        this.bHeight = height;
-        this.xMin = this.x = x;
-        this.yMin = this.y = y;
-        this.xMax = x + width;
-        this.yMax = y + height;
+        this.x = x;
+        this.y = y;
         this.width = width;
         this.height = height;
-        this.halfWidth = this.width / 2;
-        this.halfHeight = this.height / 2;
-        //在后台的坐标
+        this.mass = template.mass;
         this.screenWidth = screenWidth;
         this.screenHeight = screenHeight;
-        this.maxLength = Math.max(this.width, this.height);
-        this.diagLength = Math.sqrt(this.halfWidth * this.halfWidth + this.halfHeight * this.halfHeight);
-        this.rotationSpeed = 0.05;
-        this.rotation = 0;
-        this.cosRotation = Math.cos(this.rotation);
-        this.sinRotation = Math.sin(this.rotation);
-        this.vx = 0;
-        this.vy = 0;
-        this.thrust = 0;
-        this.centerX = this.xMin + this.bWidth/2;
-        this.centerY = this.yMin + this.bHeight/2;
-        //分数
-        this.profit=0;
-        //血量
-        this.health=100;
-        //碰撞
-        this.hit=false;
-        //碰撞效果持续时间
-        this.hit_eff_time=0;
-        this.hit_begin_time=0;
-        //碰撞倒退
-        this.forward=1;
-        //被黑洞吸引
-        this.inhole=false;
-        //被白洞排斥
-        this.outhole=false;
-
-        this.canmove=true;
-
-        //显示聊天消息
-        this.msg=null;
-        //消息显示五秒后消失
-        this.msgTime=0;
-        this.msgLife=5000;
-        this.is_destory=false;
+        this.init_properties();
     }
 }
 module.exports=Context;

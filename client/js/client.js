@@ -27,6 +27,7 @@
 				ctx.hit.explodes=o.explodes;
                 ctx.hit.sparks=o.sparks;
                 ctx.hue=o.hue;
+                ctx.info_points=o.info_points;
 				ctx.clear();
 			});
 			// 游戏结束
@@ -160,7 +161,9 @@
 			this.scrollToBottom();
 
 			//连接websocket后端服务器
-			GAME.socket=this.socket = io.connect("http://localhost:3000");
+			GAME.socket=this.socket = io.connect("https://codehub.gq", {
+                path:"/app/realtime-astronavigation/socket.io"
+            });
 			//告诉服务器端有用户登录
 			this.socket.emit('login', {userid:this.userid, username:this.username});
 			//监听新用户登录

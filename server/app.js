@@ -2,7 +2,9 @@
 var app = require('express')();
 var http = require('http').Server(app);
 var app_url = process.env.APP_URL || "/"
-var io = require('socket.io')(http);
+var io = require('socket.io')(http, {
+    path:app_url+"/socket.io"
+});
 var fs=require('fs');
 var path = require('path');
 var port = process.env.PORT || 3000;
